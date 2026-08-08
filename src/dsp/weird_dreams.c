@@ -1939,7 +1939,9 @@ static void set_param(void *instance, const char *key, const char *val) {
             NEXT_TOKEN();
             inst->voice_vol[i] = clampf(atof(token), 0.0f, 1.0f);
         }
-        /* Master: comp, dist, eq_lo, eq_mid, eq_hi, lo_freq, mid_freq, hi_freq, master */
+        /* Master — must match the field order written by get_param("state"):
+         * comp, dj_filter, eq gains (lo/mid/hi), eq freqs (lo/mid/hi),
+         * eq Qs (lo/mid/hi), master_level. */
         NEXT_TOKEN(); inst->master.comp_amount = atof(token);
         NEXT_TOKEN(); inst->master.dj_filter = atof(token);
         NEXT_TOKEN(); inst->master.eq_low_gain = atof(token);
@@ -1951,7 +1953,6 @@ static void set_param(void *instance, const char *key, const char *val) {
         NEXT_TOKEN(); inst->master.eq_low_q = atof(token);
         NEXT_TOKEN(); inst->master.eq_mid_q = atof(token);
         NEXT_TOKEN(); inst->master.eq_high_q = atof(token);
-        NEXT_TOKEN(); inst->master.dj_filter = atof(token);
         NEXT_TOKEN(); inst->master.master_level = atof(token);
 
         /* FX */
