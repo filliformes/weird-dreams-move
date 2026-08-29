@@ -43,12 +43,17 @@
                 "Patch": {
                     "label": "Patch",
                     "knobs": ["kit", "rnd_kit", "rnd_voice", "rnd_pitch", "same_freq", "init_freq", "rnd_pan", "all_mono"],
-                    "params": ["kit", "rnd_kit", "rnd_voice", "rnd_pitch", "same_freq", "init_freq", "rnd_pan", "all_mono"]
+                    "params": ["kit", "rnd_kit", "rnd_voice", "rnd_pitch", "same_freq", "init_freq", "rnd_pan", "all_mono",
+        { "key": "rnd_voice", "short_name": "Voice" },
+        { "key": "init_freq", "short_name": "Init" },
+        { "key": "rnd_pan", "short_name": "Pan" },
+        { "key": "all_mono", "short_name": "Mono" }]
                 },
                 "General": {
                     "label": "General",
                     "knobs": ["comp", "dj_filter", "eq_lo", "lo_freq", "eq_mid", "mid_freq", "eq_hi", "hi_freq"],
-                    "params": ["comp", "dj_filter", "eq_lo", "lo_freq", "eq_mid", "mid_freq", "eq_hi", "hi_freq", "q_lo", "q_mid", "q_hi", "reset_eq", "master"]
+                    "params": ["comp", "dj_filter", "eq_lo", "lo_freq", "eq_mid", "mid_freq", "eq_hi", "hi_freq", "q_lo", "q_mid", "q_hi", "reset_eq", "master",
+        { "key": "mid_freq", "short_name": "Mid" }]
                 },
                 "Voice": {
                     "label": "Voice",
@@ -58,7 +63,14 @@
                 "FX": {
                     "label": "FX",
                     "knobs": ["rev_mix", "rev_type", "rev_size", "rev_decay", "dly_mix", "dly_rate", "dly_fdbk", "dly_tone"],
-                    "params": ["rev_mix", "rev_type", "rev_size", "rev_decay", "dly_mix", "dly_rate", "dly_fdbk", "dly_tone"]
+                    "params": ["rev_mix", "rev_type", "rev_size", "rev_decay", "dly_mix", "dly_rate", "dly_fdbk", "dly_tone",
+        { "key": "rev_mix", "short_name": "Rev" },
+        { "key": "rev_type", "short_name": "Type" },
+        { "key": "rev_size", "short_name": "Size" },
+        { "key": "rev_decay", "short_name": "Decay" },
+        { "key": "dly_rate", "short_name": "Rate" },
+        { "key": "dly_fdbk", "short_name": "Fdbk" },
+        { "key": "dly_tone", "short_name": "Tone" }]
                 }
             }
         }
