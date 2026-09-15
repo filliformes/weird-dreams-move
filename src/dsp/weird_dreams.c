@@ -1934,12 +1934,20 @@ static void set_param(void *instance, const char *key, const char *val) {
             token[ti] = '\0'; \
         } while(0)
 
+        /* Kit selection + master freq override — must be read FIRST to match the
+         * serialized order. Assigned directly (NOT via apply_kit/set_param) so they
+         * do not clobber the per-voice params restored further below. */
+        NEXT_TOKEN(); inst->current_kit = (int)clampf(atof(token), 0, NUM_KITS - 1);
+        NEXT_TOKEN(); inst->same_freq = clampf(atof(token), 0.0f, 20000.0f);
+
         /* 8 mixer volumes */
         for (int i = 0; i < NUM_VOICES; i++) {
             NEXT_TOKEN();
             inst->voice_vol[i] = clampf(atof(token), 0.0f, 1.0f);
         }
-        /* Master: comp, dist, eq_lo, eq_mid, eq_hi, lo_freq, mid_freq, hi_freq, master */
+        /* Master: comp, dj_filter, eq_lo_gain, eq_mid_gain, eq_hi_gain,
+         * lo_freq, mid_freq, hi_freq, lo_q, mid_q, hi_q, master_level
+         * (12 fields — must match the 12 written in get_param exactly) */
         NEXT_TOKEN(); inst->master.comp_amount = atof(token);
         NEXT_TOKEN(); inst->master.dj_filter = atof(token);
         NEXT_TOKEN(); inst->master.eq_low_gain = atof(token);
@@ -1951,7 +1959,6 @@ static void set_param(void *instance, const char *key, const char *val) {
         NEXT_TOKEN(); inst->master.eq_low_q = atof(token);
         NEXT_TOKEN(); inst->master.eq_mid_q = atof(token);
         NEXT_TOKEN(); inst->master.eq_high_q = atof(token);
-        NEXT_TOKEN(); inst->master.dj_filter = atof(token);
         NEXT_TOKEN(); inst->master.master_level = atof(token);
 
         /* FX */
@@ -2377,6 +2384,8 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
     /* State serialization */
     if (strcmp(key, "state") == 0) {
         int n = 0;
+        /* Kit selection + master freq override (restored by direct assignment) */
+        n += snprintf(buf + n, buf_len - n, "%d %.4f ", inst->current_kit, inst->same_freq);
         /* Mixer volumes */
         for (int i = 0; i < NUM_VOICES; i++)
             n += snprintf(buf + n, buf_len - n, "%.3f ", inst->voice_vol[i]);
@@ -2402,7 +2411,7 @@ static int get_param(void *instance, const char *key, char *buf, int buf_len) {
                 v->noise_attack, v->noise_decay, v->mix, v->distortion, v->level, v->pan,
                 v->reverb_send, v->delay_send);
         }
-        if (n >= buf_len) n = buf_len - 1;
+        if (n >= buf_len) return -1;  /* overflow: fail rather than hand back truncated state */
         return n;
     }
 
