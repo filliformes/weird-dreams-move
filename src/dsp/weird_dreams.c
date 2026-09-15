@@ -17,11 +17,17 @@
  * UI: Patch page, General page, dynamic Voice page, FX page
  * ============================================================================ */
 
+#define _GNU_SOURCE   /* for pthread_setaffinity_np / cpu_set_t (must precede all includes) */
+
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include <pthread.h>
+#include <sched.h>
+#include <signal.h>
+#include <time.h>
 
 #define SAMPLE_RATE     44100.0f
 #define BLOCK_SIZE      128
@@ -1146,7 +1152,20 @@ typedef struct {
     float       custom_vols[NUM_KITS][NUM_VOICES];    /* user-saved volumes per kit */
     float       custom_pans[NUM_KITS][NUM_VOICES];    /* user-saved pans per kit */
     int         save_kit_state;                       /* 0=Play, 1=Save (self-resetting) */
+
+    /* ── Wave 3: file I/O worker thread (keeps fopen/fwrite off the SPI audio callback) ── */
+    pthread_t             io_thread;
+    int                   io_thread_started;   /* 1 if pthread_create succeeded (join guard) */
+    int                   io_thread_running;   /* set 0 to stop; worker reads via atomic acquire */
+    volatile sig_atomic_t io_request;          /* 0 = idle; WD_IO_SAVE = write kits .dat */
+    /* Pre-allocated save snapshot (bounded memcpy on RT — NO malloc on the audio thread) */
+    int         io_snap_presets[NUM_KITS][NUM_VOICES];
+    float       io_snap_vols[NUM_KITS][NUM_VOICES];
+    float       io_snap_pans[NUM_KITS][NUM_VOICES];
 } wd_instance_t;
+
+/* IO request codes (io_request) */
+#define WD_IO_SAVE  1
 
 /* Simple RNG for randomize */
 static float inst_random(wd_instance_t *inst) {
@@ -1444,17 +1463,29 @@ typedef struct {
     float pans[NUM_KITS][NUM_VOICES];
 } wd_kits_file_t;
 
-static void wd_save_kits(wd_instance_t *inst) {
+/* Write the kits .dat from a given snapshot. On-disk format is BYTE-IDENTICAL to the
+ * previous wd_save_kits(). Runs ONLY on the IO worker thread (or the destroy flush),
+ * NEVER on the audio callback. */
+static void wd_write_kits_file(const int   presets[NUM_KITS][NUM_VOICES],
+                               const float vols[NUM_KITS][NUM_VOICES],
+                               const float pans[NUM_KITS][NUM_VOICES]) {
     FILE *f = fopen(WD_KITS_FILE, "wb");
     if (!f) return;
     wd_kits_file_t file;
     file.magic = WD_KITS_MAGIC; file.version = WD_KITS_VER;
     file.count = NUM_KITS; file.reserved = 0;
-    memcpy(file.presets, inst->custom_presets, sizeof(file.presets));
-    memcpy(file.vols,    inst->custom_vols,    sizeof(file.vols));
-    memcpy(file.pans,    inst->custom_pans,    sizeof(file.pans));
+    memcpy(file.presets, presets, sizeof(file.presets));
+    memcpy(file.vols,    vols,    sizeof(file.vols));
+    memcpy(file.pans,    pans,    sizeof(file.pans));
     fwrite(&file, sizeof(file), 1, f);
     fclose(f);
+}
+
+/* Perform one pending IO request (worker thread / destroy flush only). */
+static void wd_do_io(wd_instance_t *inst, int req) {
+    if (req == WD_IO_SAVE) {
+        wd_write_kits_file(inst->io_snap_presets, inst->io_snap_vols, inst->io_snap_pans);
+    }
 }
 
 static void wd_load_kits(wd_instance_t *inst) {
@@ -1472,6 +1503,38 @@ static void wd_load_kits(wd_instance_t *inst) {
 /* ============================================================================
  * Plugin API
  * ============================================================================ */
+
+/* ── Wave 3: SCHED_OTHER file-IO worker ──
+ * Spawned at the end of create_instance, joined in destroy_instance. Never touches the
+ * audio callback. Polls io_request ~every 10 ms and writes the kits .dat from the snapshot. */
+static void *io_worker(void *arg) {
+    wd_instance_t *inst = (wd_instance_t *)arg;
+
+    /* FIRST: demote self — pthread_create inherits the caller's SCHED_FIFO 70, which would
+     * starve the audio thread. */
+    struct sched_param sp;
+    memset(&sp, 0, sizeof(sp));                 /* SCHED_OTHER, priority 0 */
+    pthread_setschedparam(pthread_self(), SCHED_OTHER, &sp);
+#ifdef __linux__
+    cpu_set_t cs;
+    CPU_ZERO(&cs);
+    CPU_SET(0, &cs); CPU_SET(1, &cs); CPU_SET(2, &cs);   /* cores 0–2, never core 3 (audio) */
+    pthread_setaffinity_np(pthread_self(), sizeof(cs), &cs);
+#endif
+
+    while (__atomic_load_n(&inst->io_thread_running, __ATOMIC_ACQUIRE)) {
+        int req = __atomic_load_n(&inst->io_request, __ATOMIC_ACQUIRE);
+        if (req) {
+            /* Clear BEFORE writing: a Save arriving during the write re-arms the flag,
+             * so no save is ever lost (latest-wins coalescing). */
+            __atomic_store_n(&inst->io_request, 0, __ATOMIC_RELEASE);
+            wd_do_io(inst, req);
+        }
+        struct timespec ts = { 0, 10 * 1000 * 1000 };   /* ~10 ms poll */
+        nanosleep(&ts, NULL);
+    }
+    return NULL;
+}
 
 static void *create_instance(const char *module_dir, const char *json_defaults) {
     (void)module_dir; (void)json_defaults;
@@ -1512,11 +1575,39 @@ static void *create_instance(const char *module_dir, const char *json_defaults) 
     reverb_update_params(&inst->reverb);
     delay_init(&inst->delay);
 
+    /* Spawn the file-IO worker LAST, once the instance is fully initialized. */
+    inst->io_request = 0;
+    inst->io_thread_running = 1;
+    inst->io_thread_started = 0;
+    if (pthread_create(&inst->io_thread, NULL, io_worker, inst) == 0) {
+        inst->io_thread_started = 1;
+    } else {
+        /* Fallback: no worker. Saves are flushed synchronously in destroy_instance
+         * (still off the recurring hot paths). */
+        inst->io_thread_running = 0;
+    }
+
     return inst;
 }
 
 static void destroy_instance(void *instance) {
-    free(instance);
+    wd_instance_t *inst = (wd_instance_t *)instance;
+    if (!inst) return;
+
+    /* Stop + join the worker (never leave it detached / outliving the instance). */
+    if (inst->io_thread_started) {
+        __atomic_store_n(&inst->io_thread_running, 0, __ATOMIC_RELEASE);
+        pthread_join(inst->io_thread, NULL);
+    }
+
+    /* Flush a still-pending save synchronously once (teardown is load-time; a final
+     * blocking write is acceptable and prevents losing a Save made just before unload). */
+    if (inst->io_request) {
+        wd_do_io(inst, inst->io_request);
+        inst->io_request = 0;
+    }
+
+    free(inst);
 }
 
 static void on_midi(void *instance, const uint8_t *msg, int len, int source) {
@@ -1760,7 +1851,12 @@ static void set_param(void *instance, const char *key, const char *val) {
                 inst->custom_vols[k][i]    = inst->voice_vol[i];
                 inst->custom_pans[k][i]    = inst->voice[i].pan;
             }
-            wd_save_kits(inst);
+            /* Wave 3: snapshot (bounded memcpy, no malloc) and hand off to the IO worker
+             * instead of doing fopen/fwrite here on the audio callback. Written ~10 ms later. */
+            memcpy(inst->io_snap_presets, inst->custom_presets, sizeof(inst->io_snap_presets));
+            memcpy(inst->io_snap_vols,    inst->custom_vols,    sizeof(inst->io_snap_vols));
+            memcpy(inst->io_snap_pans,    inst->custom_pans,    sizeof(inst->io_snap_pans));
+            __atomic_store_n(&inst->io_request, WD_IO_SAVE, __ATOMIC_RELEASE);
             inst->save_kit_state = 0;
         }
         return;

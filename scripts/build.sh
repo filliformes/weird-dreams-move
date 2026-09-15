@@ -23,7 +23,7 @@ MSYS_NO_PATHCONV=1 docker run --rm \
       -O2 -shared -fPIC -ffast-math \
       -o /build/dist/weird-dreams/dsp.so \
       /build/src/dsp/weird_dreams.c \
-      -lm'
+      -lm -lpthread'
 
 # Copy module.json
 cp "$ROOT/src/module.json" "$ROOT/dist/$MODULE_ID/"
